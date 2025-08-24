@@ -29,7 +29,8 @@ if args.mode == "split":
         os.remove(meta_path)  # Remove existing metadata file
 
     # Loop through all PNG files
-    for filepath in glob.glob(os.path.join(INPUT_FOLDER, "*.jpg")):
+    # for filepath in glob.glob(os.path.join(INPUT_FOLDER, "*.jpg")):
+    for filepath in glob.glob(os.path.join(INPUT_FOLDER, "*.png")) + glob.glob(os.path.join(INPUT_FOLDER, "*.jpg")):    
         filename = os.path.basename(filepath)
         print(f"Processing {filename}...")
         
