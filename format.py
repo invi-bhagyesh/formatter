@@ -25,6 +25,3 @@ for filename in os.listdir(folder):
                 print(f"Old path: {old_path}, New path: {new_path}")
                 shutil.copy(old_path, new_path)
                 print(f"Saved renamed file in renamed_out: {new_name}")
-                out_new_path = os.path.join(folder, new_name)
-                shutil.copy(new_path, out_new_path)
-                print(f"Copied to out: {out_new_path}")
