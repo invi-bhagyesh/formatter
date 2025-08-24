@@ -42,14 +42,15 @@ if args.mode == "split":
             continue
         label = parts[1]  # "unobtainable"
         
-        # Load image (grayscale)
-        img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-        if img is None:
+        # Load image (color and grayscale)
+        img_color = cv2.imread(filepath, cv2.IMREAD_COLOR)
+        if img_color is None:
             print(f"Failed to load {filename}")
             continue
+        gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
 
         # Find contours on inverted image to get character bounding boxes (original working method)
-        thresh = 255 - img  # bitwise inversion
+        thresh = 255 - gray  # bitwise inversion
         _, thresh_bin = cv2.threshold(thresh, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(thresh_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -78,7 +79,7 @@ if args.mode == "split":
         metadata = []
         
         # Store original image dimensions for perfect reconstruction
-        h_orig, w_orig = img.shape[:2]
+        h_orig, w_orig = gray.shape[:2]
         metadata.append(f"ORIGINAL_SIZE {w_orig} {h_orig}")
 
         # Save each character (using original working logic)
@@ -88,8 +89,8 @@ if args.mode == "split":
                 print(f"Skipping extra contour {i} in {filename} (no matching label)")
                 break
                 
-            # Extract exact character region from original image
-            char_img = img[y:y+h, x:x+w].copy()
+            # Extract exact character region from original color image
+            char_img = img_color[y:y+h, x:x+w].copy()
             
             # Store original character dimensions before any processing
             orig_char_h, orig_char_w = char_img.shape[:2]
@@ -97,7 +98,7 @@ if args.mode == "split":
             # Add padding around the character
             char_img_padded = cv2.copyMakeBorder(
                 char_img, PADDING, PADDING, PADDING, PADDING, 
-                cv2.BORDER_CONSTANT, value=255
+                cv2.BORDER_CONSTANT, value=(255, 255, 255)
             )
             
             # Resize to uniform size for model training
@@ -117,7 +118,7 @@ if args.mode == "split":
         
         # Save debug image only if debug flag is enabled
         if args.debug:
-            debug_img = img.copy()
+            debug_img = gray.copy()
             if len(debug_img.shape) == 2:  # Convert grayscale to color for colored rectangles
                 debug_img = cv2.cvtColor(debug_img, cv2.COLOR_GRAY2BGR)
             
