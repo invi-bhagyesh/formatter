@@ -59,31 +59,39 @@ if args.mode == "split":
         h_orig, w_orig = gray.shape[:2]
         metadata.append(f"ORIGINAL_SIZE {h_orig} {w_orig}")
 
+        # Collect widths and heights of each cropped char
+        char_sizes = []
+        for i, ctr in enumerate(valid_contours):
+            x, y, w, h = cv2.boundingRect(ctr)
+            if i >= len(label):
+                break
+            char_sizes.append((w, h))
+        if char_sizes:
+            max_w = max(w for w, h in char_sizes)
+            max_h = max(h for w, h in char_sizes)
+        else:
+            max_w = CHAR_SIZE
+            max_h = CHAR_SIZE
+
+        pad = 5
+
         for i, ctr in enumerate(valid_contours):
             x, y, w, h = cv2.boundingRect(ctr)
             if i >= len(label):
                 break
                 
             char_img = img_color[y:y+h, x:x+w].copy()
-            orig_char_h, orig_char_w = char_img.shape[:2]
-            
-            pad_top = (CHAR_SIZE - orig_char_h) // 2
-            pad_bottom = CHAR_SIZE - orig_char_h - pad_top
-            pad_left = (CHAR_SIZE - orig_char_w) // 2
-            pad_right = CHAR_SIZE - orig_char_w - pad_left
-
-            # ✅ FIXED: only pad, do NOT resize
-            char_img_uniform = cv2.copyMakeBorder(
-                char_img, pad_top, pad_bottom, pad_left, pad_right,
-                cv2.BORDER_CONSTANT, value=(255, 255, 255)
-            )
+            # Resize each cropped char to (max_w, max_h)
+            char_img_uniform = cv2.resize(char_img, (max_w, max_h), interpolation=cv2.INTER_AREA)
+            # Add 5 pixel padding border around the image
+            char_img_padded = cv2.copyMakeBorder(char_img_uniform, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[255,255,255])
 
             char_label = label[i]
             out_path = os.path.join(OUTPUT_FOLDER, f"{filename[:-4]}_{i}_{char_label}.png")
-            cv2.imwrite(out_path, char_img_uniform)
+            cv2.imwrite(out_path, char_img_padded)
 
-            # ✅ FIXED: save 4 padding values
-            metadata.append(f"CHAR {i} {x} {y} {w} {h} {pad_top} {pad_bottom} {pad_left} {pad_right} {CHAR_SIZE}")
+            # Save max_w, max_h, and padding in metadata
+            metadata.append(f"CHAR {i} {x} {y} {w} {h} {max_w} {max_h} {pad}")
         
         if args.debug:
             debug_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -101,7 +109,7 @@ if args.mode == "split":
             f.write(metadata[0] + "\n")
             f.write("END_FILE\n")
 
-    print("✅ Done! Characters saved with padding. Metadata includes full padding info.")
+    print("✅ Done! Characters saved with uniform max size and padding. Metadata includes max_w, max_h, and padding.")
 
 elif args.mode == "combine":
     INPUT_FOLDER = args.combine_input
@@ -126,10 +134,10 @@ elif args.mode == "combine":
                 all_files_metadata[current_file] = {'original_size': None, 'chars': []}
             elif len(parts) >= 3 and parts[0] == "ORIGINAL_SIZE" and current_file:
                 all_files_metadata[current_file]['original_size'] = (int(parts[1]), int(parts[2]))
-            # ✅ FIXED: expect 10 tokens now (with 4 paddings)
-            elif len(parts) == 10 and parts[0] == "CHAR" and current_file:
-                idx, x, y, w, h, pad_top, pad_bottom, pad_left, pad_right, uniform_size = map(int, parts[1:])
-                all_files_metadata[current_file]['chars'].append((idx, x, y, w, h, pad_top, pad_bottom, pad_left, pad_right, uniform_size))
+            # Expect 9 tokens now (CHAR, idx, x, y, w, h, max_w, max_h, pad)
+            elif len(parts) == 9 and parts[0] == "CHAR" and current_file:
+                idx, x, y, w, h, max_w, max_h, pad = map(int, parts[1:])
+                all_files_metadata[current_file]['chars'].append((idx, x, y, w, h, max_w, max_h, pad))
             elif parts == ["END_FILE"]:
                 current_file = None
 
@@ -145,22 +153,20 @@ elif args.mode == "combine":
         h_orig, w_orig = original_size
         combined_img = np.full((h_orig, w_orig, 3), 255, dtype=np.uint8)
 
-        for idx, x, y, w, h, pad_top, pad_bottom, pad_left, pad_right, uniform_size in char_metadata:
+        for idx, x, y, w, h, max_w, max_h, pad in char_metadata:
             pattern = os.path.join(INPUT_FOLDER, f"{base_name}_{idx}_*.png")
             char_files = glob.glob(pattern)
             if not char_files:
                 continue
             
-            char_img_uniform = cv2.imread(char_files[0], cv2.IMREAD_COLOR)
-            if char_img_uniform is None:
+            char_img_padded = cv2.imread(char_files[0], cv2.IMREAD_COLOR)
+            if char_img_padded is None:
                 continue
 
-            # ✅ FIXED: remove exact padding
-            char_img = char_img_uniform[pad_top:uniform_size-pad_bottom,
-                                        pad_left:uniform_size-pad_right]
-
-            if char_img.shape[:2] != (h, w):
-                char_img = cv2.resize(char_img, (w, h))
+            # Remove padding from padded char image
+            char_img_uniform = char_img_padded[pad:-pad, pad:-pad]
+            # Resize uniform char image from (max_w, max_h) back to (w, h)
+            char_img = cv2.resize(char_img_uniform, (w, h), interpolation=cv2.INTER_AREA)
 
             combined_img[y:y+h, x:x+w] = char_img
 
@@ -175,7 +181,7 @@ elif args.mode == "combine":
 # python3 script.py --mode split --split_input images --split_output characters --padding 10 --char_size 64 --debug
 
 # Split mode without debug:
-# python3 test.py --mode split --split_input ../wmadv --split_output characters --padding 10 --char_size 64
+# python3 script.py --mode split --split_input ../wmadv --split_output characters --padding 10 --char_size 64
 
 # Combine mode:
-# python3 test.py --mode combine --combine_input characters --combine_output reconstructed --original_input images
+# python3 script.py --mode combine --combine_input characters --combine_output reconstructed --original_input ../wmadv
