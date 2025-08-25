@@ -26,16 +26,56 @@ if args.mode == "split":
     if os.path.exists(meta_path):
         os.remove(meta_path)
 
+    # First pass: compute global max width and height of all valid contours in dataset
+    global_max_w = 0
+    global_max_h = 0
+
+    for filepath in glob.glob(os.path.join(INPUT_FOLDER, "*.png")) + glob.glob(os.path.join(INPUT_FOLDER, "*.jpg")):
+        filename = os.path.basename(filepath)
+        parts = filename.split("_")
+        if len(parts) < 2:
+            continue
+        label = parts[1]
+
+        img_color = cv2.imread(filepath, cv2.IMREAD_COLOR)
+        if img_color is None:
+            continue
+        gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+
+        thresh = 255 - gray
+        _, thresh_bin = cv2.threshold(thresh, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        contours, _ = cv2.findContours(thresh_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[0])
+
+        valid_contours = []
+        for ctr in contours:
+            x, y, w, h = cv2.boundingRect(ctr)
+            if w > 2 and h > 2:
+                valid_contours.append(ctr)
+
+        for i, ctr in enumerate(valid_contours):
+            if i >= len(label):
+                break
+            x, y, w, h = cv2.boundingRect(ctr)
+            if w > global_max_w:
+                global_max_w = w
+            if h > global_max_h:
+                global_max_h = h
+
+    print(f"Global max character size determined: width={global_max_w}, height={global_max_h}")
+
+    pad = 5
+
     for filepath in glob.glob(os.path.join(INPUT_FOLDER, "*.png")) + glob.glob(os.path.join(INPUT_FOLDER, "*.jpg")):
         filename = os.path.basename(filepath)
         print(f"Processing {filename}...")
-        
+
         parts = filename.split("_")
         if len(parts) < 2:
             print(f"Skipping {filename}, filename format not matching")
             continue
         label = parts[1]
-        
+
         img_color = cv2.imread(filepath, cv2.IMREAD_COLOR)
         if img_color is None:
             print(f"Failed to load {filename}")
@@ -46,53 +86,45 @@ if args.mode == "split":
         _, thresh_bin = cv2.threshold(thresh, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         contours, _ = cv2.findContours(thresh_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = sorted(contours, key=lambda ctr: cv2.boundingRect(ctr)[0])
-        
+
         valid_contours = []
         for ctr in contours:
             x, y, w, h = cv2.boundingRect(ctr)
             if w > 2 and h > 2:
                 valid_contours.append(ctr)
-        
+
         print(f" -> Found {len(valid_contours)} valid contours for '{label}' (expected {len(label)})")
-        
+
         metadata = []
         h_orig, w_orig = gray.shape[:2]
         metadata.append(f"ORIGINAL_SIZE {h_orig} {w_orig}")
 
-        # Collect widths and heights of each cropped char
-        char_sizes = []
         for i, ctr in enumerate(valid_contours):
             x, y, w, h = cv2.boundingRect(ctr)
             if i >= len(label):
                 break
-            char_sizes.append((w, h))
-        if char_sizes:
-            max_w = max(w for w, h in char_sizes)
-            max_h = max(h for w, h in char_sizes)
-        else:
-            max_w = CHAR_SIZE
-            max_h = CHAR_SIZE
 
-        pad = 5
-
-        for i, ctr in enumerate(valid_contours):
-            x, y, w, h = cv2.boundingRect(ctr)
-            if i >= len(label):
-                break
-                
             char_img = img_color[y:y+h, x:x+w].copy()
-            # Resize each cropped char to (max_w, max_h)
-            char_img_uniform = cv2.resize(char_img, (max_w, max_h), interpolation=cv2.INTER_AREA)
+
+            # Create white image of size (global_max_h, global_max_w)
+            char_canvas = np.full((global_max_h, global_max_w, 3), 255, dtype=np.uint8)
+
+            # Compute top-left corner to center the char_img in char_canvas
+            y_offset = (global_max_h - h) // 2
+            x_offset = (global_max_w - w) // 2
+
+            char_canvas[y_offset:y_offset+h, x_offset:x_offset+w] = char_img
+
             # Add 5 pixel padding border around the image
-            char_img_padded = cv2.copyMakeBorder(char_img_uniform, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[255,255,255])
+            char_img_padded = cv2.copyMakeBorder(char_canvas, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=[255,255,255])
 
             char_label = label[i]
             out_path = os.path.join(OUTPUT_FOLDER, f"{filename[:-4]}_{i}_{char_label}.png")
             cv2.imwrite(out_path, char_img_padded)
 
-            # Save max_w, max_h, and padding in metadata
-            metadata.append(f"CHAR {i} {x} {y} {w} {h} {max_w} {max_h} {pad}")
-        
+            # Save global_max_w, global_max_h, and padding in metadata
+            metadata.append(f"CHAR {i} {x} {y} {w} {h} {global_max_w} {global_max_h} {pad}")
+
         if args.debug:
             debug_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
             for i, ctr in enumerate(valid_contours):
@@ -120,12 +152,12 @@ elif args.mode == "combine":
     if not os.path.exists(meta_file):
         print("Error: metadata.txt not found in combine input folder")
         exit(1)
-    
+
     print("Reading metadata from metadata.txt...")
-    
+
     all_files_metadata = {}
     current_file = None
-    
+
     with open(meta_file, "r") as f:
         for line in f:
             parts = line.strip().split()
@@ -143,7 +175,7 @@ elif args.mode == "combine":
 
     for base_name, file_metadata in all_files_metadata.items():
         print(f"Processing {base_name}...")
-        
+
         original_size = file_metadata['original_size']
         char_metadata = file_metadata['chars']
 
@@ -158,15 +190,18 @@ elif args.mode == "combine":
             char_files = glob.glob(pattern)
             if not char_files:
                 continue
-            
+
             char_img_padded = cv2.imread(char_files[0], cv2.IMREAD_COLOR)
             if char_img_padded is None:
                 continue
 
-            # Remove padding from padded char image
-            char_img_uniform = char_img_padded[pad:-pad, pad:-pad]
-            # Resize uniform char image from (max_w, max_h) back to (w, h)
-            char_img = cv2.resize(char_img_uniform, (w, h), interpolation=cv2.INTER_AREA)
+            # Remove padding from padded char image (now directly the original char size)
+            char_img_cropped = char_img_padded[pad:-pad, pad:-pad]
+
+            # Crop center region corresponding to original bounding box (w, h)
+            start_y = (char_img_cropped.shape[0] - h) // 2
+            start_x = (char_img_cropped.shape[1] - w) // 2
+            char_img = char_img_cropped[start_y:start_y+h, start_x:start_x+w]
 
             combined_img[y:y+h, x:x+w] = char_img
 
